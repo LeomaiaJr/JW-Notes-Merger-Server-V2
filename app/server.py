@@ -28,7 +28,7 @@ async def hello_world():
     return {"message": "pong"}
 
 
-@app.post("/api/merge-db")
+@app.post("/merge-db")
 async def merge_db(main: UploadFile = File(...), toMerge: UploadFile = File(...)):
     try:
         ensure_folders_exist()

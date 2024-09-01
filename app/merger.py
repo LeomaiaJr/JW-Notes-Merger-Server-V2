@@ -2,6 +2,7 @@ import sqlite3
 import os
 import shutil
 import zipfile
+import time
 
 
 def get_next_id(cursor, table_name, id_column):
@@ -70,8 +71,6 @@ def merge_simple_table(
                 )
                 if existing_row:
                     id_mappings[table_name][row[0]] = existing_row[0]
-                else:
-                    print(f"Could not find existing row for {table_name}")
 
             else:
                 raise
@@ -96,9 +95,6 @@ def merge_input_field(source_cursor, target_cursor, id_mappings):
         new_location_id = id_mappings["Location"].get(old_location_id)
 
         if new_location_id is None:
-            print(
-                f"Warning: No mapping found for LocationId {old_location_id} in InputField"
-            )
             continue
 
         try:
@@ -177,8 +173,6 @@ def merge_complex_table(
                     # For composite keys, we don't need to update id_mappings
                     if target_cursor.rowcount > 0:
                         operations += 1
-                    else:
-                        print(f"Warning: No row inserted for {table_name}")
 
             except sqlite3.IntegrityError as e:
                 if "UNIQUE constraint failed" in str(e):
@@ -318,16 +312,13 @@ def merge_databases(source_db_path, target_db_path):
     ]
 
     for table, id_column in simple_tables:
-        print(f"Simple Merging table: {table}")
         op_count += merge_simple_table(
             source_cursor, target_cursor, table, id_column, id_mappings
         )
 
-    print("Merging table: InputField")
     op_count += merge_input_field(source_cursor, target_cursor, id_mappings)
 
     for table in complex_tables:
-        print(f"Merging table: {table['name']}")
         operations = merge_complex_table(
             source_cursor,
             target_cursor,
@@ -337,10 +328,9 @@ def merge_databases(source_db_path, target_db_path):
             table["dependencies"],
             table.get("map_duplicates", False),
         )
-        print(f"Operations: {operations}")
         op_count += operations
 
-    print(f"Total operations: {op_count}")
+    print(f"Total write operations: {op_count}")
 
     target_conn.commit()
     source_conn.close()
@@ -357,7 +347,6 @@ def copy_files(source_folder, target_folder, exclude_files):
             source_path = os.path.join(source_folder, item)
             target_path = os.path.join(target_folder, item)
             shutil.copy(source_path, target_path)
-            print(f"Copy: {item}")
 
 
 def zip_folder(folder_path, output_filename):
@@ -367,7 +356,6 @@ def zip_folder(folder_path, output_filename):
                 file_path = os.path.join(root, file)
                 arcname = os.path.relpath(file_path, folder_path)
                 zipf.write(file_path, arcname)
-    print(f"Created zip file: {output_filename}")
 
 
 def unzip_file(zip_path, extract_path):
@@ -388,6 +376,7 @@ def cleanup_folder(folder_path):
 
 
 def merge_files():
+    start_time = time.time()
     try:
         main_file_path = "data/main.zip"
         target_file_path = "data/toMerge.zip"
@@ -421,26 +410,41 @@ def merge_files():
                 source_folder = os.path.dirname(db_path1)
                 target_folder = os.path.dirname(db_path2)
 
-            print(f"Source DB: {source_db_path}")
-            print(f"Target DB: {target_db_path}")
-
+            merge_start_time = time.time()
             merge_databases(source_db_path, target_db_path)
-            print("Database merge completed successfully.")
+            merge_end_time = time.time()
+            merge_duration = merge_end_time - merge_start_time
+            print(
+                f"Database merge completed successfully in {merge_duration:.2f} seconds."
+            )
 
-            # Move files playlist files from source to target folder
+            copy_start_time = time.time()
             exclude_files = ["manifest.json", "userData.db", "default_thumbnail.png"]
             copy_files(source_folder, target_folder, exclude_files)
+            copy_end_time = time.time()
+            copy_duration = copy_end_time - copy_start_time
+            print(f"File copying completed in {copy_duration:.2f} seconds.")
 
+            zip_start_time = time.time()
             parent_folder = os.path.dirname(target_folder)
             zip_filename = os.path.join(parent_folder, "merged.jwlibrary")
             zip_folder(target_folder, zip_filename)
+            zip_end_time = time.time()
+            zip_duration = zip_end_time - zip_start_time
+            print(f"Zipping completed in {zip_duration:.2f} seconds.")
 
-            print("Cleaning up temporary folders...")
+            cleanup_start_time = time.time()
             cleanup_folder("data/main")
             cleanup_folder("data/toMerge")
-            print("Cleanup completed.")
+            cleanup_end_time = time.time()
+            cleanup_duration = cleanup_end_time - cleanup_start_time
+            print(f"Cleanup completed in {cleanup_duration:.2f} seconds.")
 
             print("All operations completed successfully.")
+
+        end_time = time.time()
+        total_duration = end_time - start_time
+        print(f"Total execution time: {total_duration:.2f} seconds.")
 
         return True
     except Exception as e:
