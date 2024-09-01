@@ -370,40 +370,79 @@ def zip_folder(folder_path, output_filename):
     print(f"Created zip file: {output_filename}")
 
 
-if __name__ == "__main__":
-    db_path1 = "../assets/backup1/userData.db"
-    db_path2 = "../assets/backup2/userData.db"
+def unzip_file(zip_path, extract_path):
+    with zipfile.ZipFile(zip_path, "r") as zip_ref:
+        zip_ref.extractall(extract_path)
 
-    if not os.path.exists(db_path1) or not os.path.exists(db_path2):
-        print("Error: One or both database files do not exist.")
-    else:
-        # Determine the larger database and assign it as the target
-        size1 = get_file_size(db_path1)
-        size2 = get_file_size(db_path2)
 
-        if size1 >= size2:
-            source_db_path = db_path2
-            target_db_path = db_path1
-            source_folder = os.path.dirname(db_path2)
-            target_folder = os.path.dirname(db_path1)
+def cleanup_folder(folder_path):
+    for filename in os.listdir(folder_path):
+        file_path = os.path.join(folder_path, filename)
+        try:
+            if os.path.isfile(file_path) or os.path.islink(file_path):
+                os.unlink(file_path)
+            elif os.path.isdir(file_path):
+                shutil.rmtree(file_path)
+        except Exception as e:
+            print(f"Failed to delete {file_path}. Reason: {e}")
+
+
+def merge_files():
+    try:
+        main_file_path = "data/main.zip"
+        target_file_path = "data/toMerge.zip"
+
+        if not os.path.exists(main_file_path) or not os.path.exists(target_file_path):
+            print("Error: One or both files do not exist.")
+            return False
+
+        unzip_file(main_file_path, "data/main")
+        unzip_file(target_file_path, "data/toMerge")
+
+        db_path1 = "data/main/userData.db"
+        db_path2 = "data/toMerge/userData.db"
+
+        if not os.path.exists(db_path1) or not os.path.exists(db_path2):
+            print("Error: One or both database files do not exist.")
+            return False
         else:
-            source_db_path = db_path1
-            target_db_path = db_path2
-            source_folder = os.path.dirname(db_path1)
-            target_folder = os.path.dirname(db_path2)
+            # Determine the larger database and assign it as the target
+            size1 = get_file_size(db_path1)
+            size2 = get_file_size(db_path2)
 
-        print(f"Source DB: {source_db_path}")
-        print(f"Target DB: {target_db_path}")
+            if size1 >= size2:
+                source_db_path = db_path2
+                target_db_path = db_path1
+                source_folder = os.path.dirname(db_path2)
+                target_folder = os.path.dirname(db_path1)
+            else:
+                source_db_path = db_path1
+                target_db_path = db_path2
+                source_folder = os.path.dirname(db_path1)
+                target_folder = os.path.dirname(db_path2)
 
-        merge_databases(source_db_path, target_db_path)
-        print("Database merge completed successfully.")
+            print(f"Source DB: {source_db_path}")
+            print(f"Target DB: {target_db_path}")
 
-        # Move files playlist files from source to target folder
-        exclude_files = ["manifest.json", "userData.db", "default_thumbnail.png"]
-        copy_files(source_folder, target_folder, exclude_files)
+            merge_databases(source_db_path, target_db_path)
+            print("Database merge completed successfully.")
 
-        parent_folder = os.path.dirname(target_folder)
-        zip_filename = os.path.join(parent_folder, "merged.jwlibrary")
-        zip_folder(target_folder, zip_filename)
+            # Move files playlist files from source to target folder
+            exclude_files = ["manifest.json", "userData.db", "default_thumbnail.png"]
+            copy_files(source_folder, target_folder, exclude_files)
 
-        print("All operations completed successfully.")
+            parent_folder = os.path.dirname(target_folder)
+            zip_filename = os.path.join(parent_folder, "merged.jwlibrary")
+            zip_folder(target_folder, zip_filename)
+
+            print("Cleaning up temporary folders...")
+            cleanup_folder("data/main")
+            cleanup_folder("data/toMerge")
+            print("Cleanup completed.")
+
+            print("All operations completed successfully.")
+
+        return True
+    except Exception as e:
+        print(e)
+        return False

@@ -1,12 +1,15 @@
 [tool.poetry]
 name = "jw-notes-merger-v2"
 version = "0.1.0"
-description = ""
-authors = ["Your Name <you@example.com>"]
+description = "Simple API for merging JW Library's notes, bookmarks and markup."
+authors = ["Leonardo Maia Jr <leomaiajr@hotmail.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.12"
+fastapi = "^0.112.2"
+uvicorn = "^0.30.6"
+python-multipart = "^0.0.9"
 
 
 [build-system]
