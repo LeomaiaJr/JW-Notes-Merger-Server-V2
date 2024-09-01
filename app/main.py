@@ -15,7 +15,7 @@ def get_unique_constraints(cursor, table_name):
     indices = cursor.fetchall()
     unique_constraints = []
     for idx in indices:
-        if idx[2] == 1:  # This index is a unique constraint
+        if idx[2] == 1:  # This index is a unique constraint (idx[2] == 1 means unique)
             cursor.execute(f"PRAGMA index_info('{idx[1]}')")
             columns = [info[2] for info in cursor.fetchall()]
             unique_constraints.append(columns)
@@ -33,27 +33,22 @@ def find_existing_row(cursor, table_name, unique_constraint, row_data, columns):
 def merge_simple_table(
     source_cursor, target_cursor, table_name, id_column, id_mappings
 ):
-    # Get column names
     source_cursor.execute(f"PRAGMA table_info({table_name})")
     columns = [column[1] for column in source_cursor.fetchall()]
 
-    # Create insert query template
     insert_columns = ",".join(columns)
     placeholders = ",".join(["?" for _ in columns])
     insert_query = (
         f"INSERT INTO {table_name} ({insert_columns}) VALUES ({placeholders})"
     )
 
-    # Get the starting ID for new entries
     next_id = get_next_id(target_cursor, table_name, id_column)
     current_id = next_id
 
-    # Fetch all rows from the source table
     source_cursor.execute(f"SELECT * FROM {table_name}")
     rows = source_cursor.fetchall()
 
     for row in rows:
-        # Create a new row with the updated ID
         new_row = list(row)
         new_row[0] = current_id
 
@@ -88,19 +83,16 @@ def merge_input_field(source_cursor, target_cursor, id_mappings):
     source_cursor.execute("SELECT * FROM InputField")
     rows = source_cursor.fetchall()
 
-    # Prepare the insert query
     insert_query = """
   INSERT INTO InputField (LocationId, TextTag, Value)
   VALUES (?, ?, ?)
   """
 
-    # Counter for successful inserts
     inserted_count = 0
 
     for row in rows:
         old_location_id, text_tag, value = row
 
-        # Get the new LocationId from id_mappings
         new_location_id = id_mappings["Location"].get(old_location_id)
 
         if new_location_id is None:
@@ -122,59 +114,91 @@ def merge_input_field(source_cursor, target_cursor, id_mappings):
     return inserted_count
 
 
-def merge_complex_table_group_one(
-    source_cursor, target_cursor, table_name, id_column, id_mappings, dependencies
+def merge_complex_table(
+    source_cursor,
+    target_cursor,
+    table_name,
+    id_columns,
+    id_mappings,
+    dependencies,
+    map_duplicates,
 ):
     source_cursor.execute(f"PRAGMA table_info({table_name})")
     columns = [column[1] for column in source_cursor.fetchall()]
 
-    # Create insert query template
     insert_columns = ",".join(columns)
     placeholders = ",".join(["?" for _ in columns])
-    insert_query = (
-        f"INSERT INTO {table_name} ({insert_columns}) VALUES ({placeholders})"
-    )
 
-    # Get the starting ID for new entries
-    next_id = get_next_id(target_cursor, table_name, id_column)
-    current_id = next_id
+    if len(id_columns) > 1:
+        insert_query = f"INSERT OR IGNORE INTO {table_name} ({insert_columns}) VALUES ({placeholders})"
+    else:
+        insert_query = (
+            f"INSERT INTO {table_name} ({insert_columns}) VALUES ({placeholders})"
+        )
 
-    # Get unique constraints
-    unique_constraints = get_unique_constraints(target_cursor, table_name)
+    # Get the starting ID for new entries (only for tables with single primary key)
+    if len(id_columns) == 1:
+        next_id = get_next_id(target_cursor, table_name, id_columns[0])
+        current_id = next_id
 
-    # Fetch all rows from the source table
     source_cursor.execute(f"SELECT * FROM {table_name}")
     rows = source_cursor.fetchall()
 
     operations = 0
 
     for row in rows:
-        # Create a new row with the updated ID and mapped foreign keys
         new_row = list(row)
-        new_row[0] = current_id
 
-        # Update foreign keys based on dependencies
-        for dep_column, dep_table in dependencies.items():
-            col_index = columns.index(dep_column)
-            old_fk = new_row[col_index]
-            new_fk = id_mappings[dep_table].get(old_fk)
-            if new_fk is not None:
-                new_row[col_index] = new_fk
-            else:
-                print(
-                    f"Warning: No mapping found for {dep_column} {old_fk} in {table_name}"
-                )
+        # Update IDs and foreign keys based on dependencies
+        for col, dep_table in dependencies.items():
+            col_index = columns.index(col)
+            old_id = new_row[col_index]
+            new_id = id_mappings[dep_table].get(old_id)
+            if new_id is not None:
+                new_row[col_index] = new_id
+            elif old_id is not None:
+                print(f"Warning: No mapping found for {col} {old_id} in {table_name}")
                 break
         else:
             try:
+
+                if len(id_columns) == 1:
+                    new_row[0] = current_id
+
                 target_cursor.execute(insert_query, new_row)
-                id_mappings[table_name][row[0]] = current_id
-                current_id += 1
-                operations += 1
+
+                # Update id_mappings and increment current_id
+                if len(id_columns) == 1:
+                    if target_cursor.rowcount > 0:
+                        id_mappings[table_name][row[0]] = current_id
+                        current_id += 1
+                        operations += 1
+                else:
+                    # For composite keys, we don't need to update id_mappings
+                    if target_cursor.rowcount > 0:
+                        operations += 1
+                    else:
+                        print(f"Warning: No row inserted for {table_name}")
 
             except sqlite3.IntegrityError as e:
                 if "UNIQUE constraint failed" in str(e):
-                    continue
+                    if map_duplicates:
+                        error_cleaned = e.args[0].replace(
+                            "UNIQUE constraint failed: ", ""
+                        )
+                        error_cleaned = error_cleaned.replace(f"{table_name}.", "")
+                        unique_constraints = error_cleaned.split(", ")
+                        existing_row = find_existing_row(
+                            target_cursor,
+                            table_name,
+                            unique_constraints,
+                            new_row,
+                            columns,
+                        )
+                        if existing_row:
+                            id_mappings[table_name][row[0]] = existing_row[0]
+                        else:
+                            print(f"Could not find existing row for {table_name}")
                 else:
                     raise
 
@@ -213,10 +237,10 @@ def merge_databases(source_db_path, target_db_path):
         ("Tag", "TagId"),
     ]
 
-    complex_tables_group_one = [
+    complex_tables = [
         {
             "name": "Bookmark",
-            "id_column": "BookmarkId",
+            "id_columns": ["BookmarkId"],
             "dependencies": {
                 "LocationId": "Location",
                 "PublicationLocationId": "Location",
@@ -224,16 +248,72 @@ def merge_databases(source_db_path, target_db_path):
         },
         {
             "name": "PlaylistItem",
-            "id_column": "PlaylistItemId",
-            "dependencies": {
-                "Accuracy": "PlaylistItemAccuracy",
-                "ThumbnailFilePath": "IndependentMedia",
-            },
+            "id_columns": ["PlaylistItemId"],
+            "dependencies": {},
         },
         {
             "name": "UserMark",
-            "id_column": "UserMarkId",
+            "id_columns": ["UserMarkId"],
             "dependencies": {"LocationId": "Location"},
+            "map_duplicates": True,
+        },
+        {
+            "name": "BlockRange",
+            "id_columns": ["BlockRangeId"],
+            "dependencies": {"UserMarkId": "UserMark"},
+        },
+        {
+            "name": "Note",
+            "id_columns": ["NoteId"],
+            "dependencies": {"UserMarkId": "UserMark", "LocationId": "Location"},
+            "map_duplicates": True,
+        },
+        {
+            "name": "PlaylistItemIndependentMediaMap",
+            "id_columns": ["PlaylistItemId", "IndependentMediaId"],
+            "dependencies": {
+                "PlaylistItemId": "PlaylistItem",
+                "IndependentMediaId": "IndependentMedia",
+            },
+        },
+        {
+            "name": "PlaylistItemLocationMap",
+            "id_columns": ["PlaylistItemId", "LocationId"],
+            "dependencies": {
+                "PlaylistItemId": "PlaylistItem",
+                "LocationId": "Location",
+            },
+        },
+        {
+            "name": "PlaylistItemMarker",
+            "id_columns": ["PlaylistItemMarkerId"],
+            "dependencies": {"PlaylistItemId": "PlaylistItem"},
+            "map_duplicates": True,
+        },
+        {
+            "name": "PlaylistItemMarkerBibleVerseMap",
+            "id_columns": ["PlaylistItemMarkerId", "VerseId"],
+            "dependencies": {"PlaylistItemMarkerId": "PlaylistItemMarker"},
+        },
+        {
+            "name": "PlaylistItemMarkerParagraphMap",
+            "id_columns": [
+                "PlaylistItemMarkerId",
+                "MepsDocumentId",
+                "ParagraphIndex",
+                "MarkerIndexWithinParagraph",
+            ],
+            "dependencies": {"PlaylistItemMarkerId": "PlaylistItemMarker"},
+        },
+        {
+            "name": "TagMap",
+            "id_columns": ["TagMapId"],
+            "dependencies": {
+                "TagId": "Tag",
+                "PlaylistItemId": "PlaylistItem",
+                "LocationId": "Location",
+                "NoteId": "Note",
+            },
         },
     ]
 
@@ -246,39 +326,38 @@ def merge_databases(source_db_path, target_db_path):
     print("Merging table: InputField")
     op_count += merge_input_field(source_cursor, target_cursor, id_mappings)
 
-    for table in complex_tables_group_one:
+    for table in complex_tables:
         print(f"Merging table: {table['name']}")
-        operations = merge_complex_table_group_one(
+        operations = merge_complex_table(
             source_cursor,
             target_cursor,
             table["name"],
-            table["id_column"],
+            table["id_columns"],
             id_mappings,
             table["dependencies"],
+            table.get("map_duplicates", False),
         )
+        print(f"Operations: {operations}")
         op_count += operations
 
-    print(id_mappings)
+    print(f"Total operations: {op_count}")
 
-    # Commit changes and close connections
     target_conn.commit()
     source_conn.close()
     target_conn.close()
-
-    print("Database merge completed successfully.")
 
 
 def get_file_size(file_path):
     return os.path.getsize(file_path)
 
 
-def move_files(source_folder, target_folder, exclude_files):
+def copy_files(source_folder, target_folder, exclude_files):
     for item in os.listdir(source_folder):
         if item not in exclude_files:
             source_path = os.path.join(source_folder, item)
             target_path = os.path.join(target_folder, item)
-            shutil.move(source_path, target_path)
-            print(f"Moved: {item}")
+            shutil.copy(source_path, target_path)
+            print(f"Copy: {item}")
 
 
 def zip_folder(folder_path, output_filename):
@@ -316,17 +395,15 @@ if __name__ == "__main__":
         print(f"Source DB: {source_db_path}")
         print(f"Target DB: {target_db_path}")
 
-        # Merge databases
         merge_databases(source_db_path, target_db_path)
         print("Database merge completed successfully.")
 
-        # Move files from source to target folder
+        # Move files playlist files from source to target folder
         exclude_files = ["manifest.json", "userData.db", "default_thumbnail.png"]
-        move_files(source_folder, target_folder, exclude_files)
+        copy_files(source_folder, target_folder, exclude_files)
 
-        # Create zip file of the target folder
         parent_folder = os.path.dirname(target_folder)
         zip_filename = os.path.join(parent_folder, "merged.jwlibrary")
-        # zip_folder(target_folder, zip_filename)
+        zip_folder(target_folder, zip_filename)
 
         print("All operations completed successfully.")
